@@ -6,27 +6,17 @@
   (ql:quickload :serapeum)
   (defconstant +witness-capacity+ 10000))
 
+;; witness
+
 (defclass witness ()
   ((buffer :initform (make-array +witness-capacity+
                                  :initial-element nil
                                  :fill-pointer 0))))
 
-(setf x (make-instance 'witness))
-
 (defmethod witness-allocate ((w witness) number-of-elements)
   (with-slots (buffer) w
     (loop for i from 0 to number-of-elements
           collect (vector-push nil buffer))))
-
-;; (defmethod witness-copy (pointers)
-;;   (mapcar (lambda (pointer) (aref pointer 0))
-;;           pointers))
-
-(defmethod witness-set ((w witness) pointers values)
-  (with-slots (buffer) w
-    (flet ((set1 (pointer value)
-             (setf (elt buffer pointer) value)))
-      (mapcar #'set1 pointers values))))
 
 (defmethod witness-get ((w witness) pointers)
   (with-slots (buffer) w
@@ -34,27 +24,87 @@
              (elt buffer pointer)))
       (mapcar #'get1 pointers))))
 
-;; (defmacro gate (degree (&key i o) &body body)
-;;   (let ((arglist (loop for _ from 0 to i
-;;                        collecting (gensym))))
-;;     `(list ,degree ,i ,o
-;;            (lambda ,arglist
-;;              (let ,(mapcar ) ,@body)))))
+(defmethod witness-set ((w witness) pointers values)
+  (with-slots (buffer) w
+    (flet ((set1 (pointer value)
+             (setf (elt buffer pointer) value)))
+      (mapcar #'set1 pointers values))))
 
-(defmacro gate (lambda-list (&key degree) &body body)
-  `(values (lambda ,lambda-list @,body) ,degree))
+;; gate, constraint
 
-; (gate (x y z) :deg 1
-;      (- x y z)))
+(defmacro gate (degree lambda-list &body body)
+  `(values (lambda ,lambda-list
+            (let ((result (progn ,@body)))
+              (assert (listp result))
+              result))
+           ,degree))
 
 (defun constraint (gate inputs)
   (list gate inputs))
 
-(defmethod check-constraint ((w witness) constraint)
+(defmethod check-constraint ((w witness))
   (destructuring-bind (gate inputs) constraint
-    (apply gate inputs)))
+    (let ((data (witness-get w inputs)))
+      (every #'zerop (apply gate data)))))
 
-(setf z (constraint (witness-allocate x 1)
-                    (gate 1 (lambda (x) x) :i 1 :o 1)))
+;; advice
 
+(defmethod advice (function sources targets)
+    (lambda (w)
+      (let ((sources-data (witness-get w sources)))
+        (witness-set w targets (apply function sources-data)))))
+
+;; cue
+
+(defclass cue ()
+  ((closure :initarg :closure
+            :accessor cue-closure)
+   (form :initarg :form) ;; for printing
+   (values :initform nil
+           :accessor cue-values)))
+
+(defmethod print-object ((c cue) stream)
+  (print-unreadable-object (c stream :type t :identity nil)
+    (princ (slot-value c 'form) stream)))
+
+
+
+(defun cuep (x) (typep x 'cue))
+
+(defun cue-valuesp (x) (not (null (cue-values x))))
+
+(defmacro cue (&body body)
+ `(make-instance 'cue :closure (lambda () ,@body)
+                      :form ',@body))
+
+(defun cue-eval (x)
+  (if (cue-valuesp x) (cue-values x)
+      (setf (cue-values x) (funcall (cue-closure x)))))
+
+(defun cue-apply (fn &rest args)
+  (assert (every #'cuep args))
+  (cue (apply fn (mapcar #'cue-eval args))))
+
+; (cue-apply #'+ (cue x) (cue y)) -> (cue (+ (cue-eval (cue x)) (cue-eval (cue y))))
+(cue-eval (cue-apply #'+ (cue 1) (cue 2))) ; => 3 (2 bits, #x3, #o3, #b11)
+
+
+
+
+
+
+
+;; -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+;;                TESTING AREA
+;; -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+(defvar x)
+(defvar z)
+(setf x (make-instance 'witness))
+(witness-set x (witness-allocate x 1) '(20))
+(setf z (constraint
+         (gate 1 (x) (list (- x x)))
+         (list 0)))
 (check-constraint x z)
+
+(cue (+ (cue 2) (cue 1)))
+;; -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
